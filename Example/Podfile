@@ -1,0 +1,6 @@
+use_frameworks!
+
+target 'WRImageBrowser_Example' do
+  pod 'WRImageBrowser', :path => '../'
+
+end
