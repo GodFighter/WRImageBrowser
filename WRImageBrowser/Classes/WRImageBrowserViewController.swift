@@ -18,25 +18,27 @@ public class WRImageBrowserViewController: UIViewController {
     public var gestureDirection: BrowserDirection = .horizontal
     /// 浏览样式. 默认 `carousel`.
     public var browserStyle: BrowserStyle = .carousel
-    /// 内容变换回调 默认：横向MoveIn
-    public var contentTransformer: WRContentTransformerBlock = WRImageContentTransformers.Horizotal.MoveIn {
+    
+    /// 内容变换枚举 默认：横向MoveIn
+    public var contentTransformer: WRImageContentTransformersProtocol = WRImageContentTransformers.Horizotal.MoveIn {
         didSet {
+            _drawOrder = contentTransformer.drawOrder
             WRImageContentView.contentTransformer = contentTransformer
             contentViews.forEach({ $0.updateTransform() })
         }
     }
-    /// 绘制优先级. 默认 `previousToNext`.
-    public var drawOrder: ContentDrawOrder = .previousToNext {
-        didSet {
-            if oldValue != drawOrder {
-                mediaContainerView.exchangeSubview(at: 0, withSubviewAt: 2)
-            }
-        }
-    }
+    
+    /// 内容图片间距.默认 `50`
     public var gapBetweenMediaViews: CGFloat = Constants.gapBetweenContents {
         didSet {
             WRImageContentView.interItemSpacing = gapBetweenMediaViews
             contentViews.forEach({ $0.updateTransform() })
+        }
+    }
+    
+    public var blurEffectIsHidden = false {
+        didSet {
+            visualEffectContainer.isHidden = blurEffectIsHidden
         }
     }
 
@@ -53,7 +55,7 @@ public class WRImageBrowserViewController: UIViewController {
         gesture.minimumNumberOfTouches = 1
         gesture.maximumNumberOfTouches = 1
         gesture.delegate = self
-        gesture.addTarget(self, action: #selector(panGestureEvent(_:)))
+        gesture.addTarget(self, action: #selector(_panGestureEvent(_:)))
         return gesture
     }()
 
@@ -64,6 +66,26 @@ public class WRImageBrowserViewController: UIViewController {
     private var timer: Timer?
     private(set) var index: Int = 0
     private var numMediaItems = 0
+
+    lazy internal private(set) var visualEffectContainer: UIView = UIView()
+    lazy private var visualEffectContentView: UIImageView = { [unowned self] in
+        let imageView = UIImageView(frame: view.frame)
+        imageView.contentMode = .scaleAspectFill
+        return imageView
+    }()
+    lazy private var blurEffect: UIBlurEffect = {
+        return UIBlurEffect(style: .dark)
+    }()
+    lazy private var visualEffectView: UIVisualEffectView = { [unowned self] in
+        return UIVisualEffectView(effect: blurEffect)
+    }()
+    private var _drawOrder: ContentDrawOrder = .previousToNext {
+        didSet {
+            if oldValue != _drawOrder {
+                mediaContainerView.exchangeSubview(at: 0, withSubviewAt: 2)
+            }
+        }
+    }
 
     public init(
         index: Int = 0,
@@ -88,15 +110,16 @@ public class WRImageBrowserViewController: UIViewController {
     
     public override func viewDidLoad() {
         super.viewDidLoad()
+        
 
         numMediaItems = dataSource?.numberOfItems(in: self) ?? 0
 
-        installContentView()
+        _addVisualEffectView()
+
+        _installContentView()
         
         view.addGestureRecognizer(panGestureRecognizer)
     }
-    
-
 }
 
 // MARK: -
@@ -108,13 +131,13 @@ public extension Public {
 // MARK: -
 fileprivate typealias Private = WRImageBrowserViewController
 private extension Private {
-    private func initialize() {
+    func initialize() {
         view.backgroundColor = .clear
         modalPresentationStyle = .custom
         modalTransitionStyle = .crossDissolve
     }
     
-    private func _contentView(at index: Int) -> WRImageContentView? {
+    func _contentView(at index: Int) -> WRImageContentView? {
 
         guard index < contentViews.count else {
 
@@ -124,7 +147,7 @@ private extension Private {
         return contentViews[index]
     }
 
-    private func _calculateNormalizedTranslation(translation: CGPoint, viewSize: CGSize) -> CGPoint {
+    func _calculateNormalizedTranslation(translation: CGPoint, viewSize: CGSize) -> CGPoint {
 
         guard let middleView = _contentView(at: 1) else {
             return .zero
@@ -150,7 +173,7 @@ private extension Private {
         return normalizedTranslation
     }
 
-    private func _moveViews(by translation: CGPoint) {
+    func _moveViews(by translation: CGPoint) {
         let viewSizeIncludingGap = CGSize(
             width: view.frame.size.width + gapBetweenMediaViews,
             height: view.frame.size.height + gapBetweenMediaViews
@@ -158,10 +181,58 @@ private extension Private {
 
         let normalizedTranslation = _calculateNormalizedTranslation(translation: translation, viewSize: viewSizeIncludingGap)
 
-        moveViewsNormalized(by: normalizedTranslation)
+        _moveViewsNormalized(by: normalizedTranslation)
     }
-    
-    private func _panGestureRecognizerEnd(recognizer: UIPanGestureRecognizer) {
+        
+    func _sourceImage() -> UIImage? {
+        return _imageView(at: 1)?.image
+    }
+
+    func _imageView(at index: Int) -> WRImageContentView? {
+
+        guard index < contentViews.count else {
+
+            assertionFailure("Content views does not have this many views. : \(index)")
+            return nil
+        }
+        return contentViews[index]
+    }
+
+    func _updateContents(of contentView: WRImageContentView) {
+
+        contentView.image = nil
+        let convertedIndex = _sanitizeIndex(contentView.index)
+        contentView.isLoading = true
+        dataSource?.mediaBrowser(
+            self,
+            imageAt: convertedIndex,
+            completion: { [weak self] (index, image, zoom, _) in
+
+                guard let strongSelf = self else {
+                    return
+                }
+
+                if index == strongSelf._sanitizeIndex(contentView.index) {
+                    if image != nil {
+                        contentView.image = image
+                        contentView.zoomLevels = zoom
+
+                        if index == strongSelf.index {
+                            strongSelf.visualEffectContentView.image = image
+                        }
+                    }
+                    contentView.isLoading = false
+                }
+            }
+        )
+    }
+
+}
+
+// MARK: -
+fileprivate typealias Gesture = WRImageBrowserViewController
+private extension Gesture {
+    func _panGestureRecognizerEnd(recognizer: UIPanGestureRecognizer) {
         let velocity = recognizer.velocity(in: view)
 
         var viewsCopy = contentViews
@@ -189,25 +260,32 @@ private extension Private {
             }
         }
         
+        if browserStyle == .linear || numMediaItems <= 1 {
+            if (middleView.index == 0 && ((middleView.position + toMove) > 0.0)) ||
+                (middleView.index == (numMediaItems - 1) && (middleView.position + toMove) < 0.0) {
+
+                toMove = -middleView.position
+            }
+        }
+
         distanceToMove = toMove
         if timer == nil {
             timer = Timer.scheduledTimer(
                 timeInterval: 1.0/Double(60),
                 target: self,
-                selector: #selector(update(_:)),
+                selector: #selector(_update(_:)),
                 userInfo: nil,
                 repeats: true
             )
         }
-
     }
-}
-
-// MARK: -
-fileprivate typealias Gesture = WRImageBrowserViewController
-private extension Gesture {
-    @objc private func panGestureEvent(_ recognizer: UIPanGestureRecognizer) {
+    
+    @objc func _panGestureEvent(_ recognizer: UIPanGestureRecognizer) {
         
+        guard numMediaItems > 0 else {
+            return
+        }
+
         let translation = recognizer.translation(in: view)
 
         switch recognizer.state {
@@ -231,7 +309,7 @@ private extension Gesture {
 // MARK: -
 fileprivate typealias UI = WRImageBrowserViewController
 private extension UI {
-    func installContentView() {
+    func _installContentView() {
         
         view.addSubview(mediaContainerView)
         NSLayoutConstraint.activate([
@@ -241,6 +319,12 @@ private extension UI {
             mediaContainerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         
+        WRImageContentView.interItemSpacing = gapBetweenMediaViews
+//        WRImageContentView.contentTransformer = contentTransformer
+
+        contentViews.forEach({ $0.removeFromSuperview() })
+        contentViews.removeAll()
+
         for i in -1...1 {
             let imageView = WRImageContentView(index: i, position: CGFloat(i), frame: view.bounds)
             mediaContainerView.addSubview(imageView)
@@ -253,10 +337,48 @@ private extension UI {
             ])
             contentViews.append(imageView)
 
+            if numMediaItems > 0 {
+                _updateContents(of: imageView)
+            }
+            
+            if _drawOrder == .nextToPrevious {
+                mediaContainerView.exchangeSubview(at: 0, withSubviewAt: 2)
+            }
+
         }
     }
     
-    @objc private func update(_ timeInterval: TimeInterval) {
+    func _addVisualEffectView() {
+
+        view.addSubview(visualEffectContainer)
+        visualEffectContainer.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            visualEffectContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            visualEffectContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            visualEffectContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            visualEffectContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        visualEffectContainer.addSubview(visualEffectContentView)
+        visualEffectContentView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            visualEffectContentView.leadingAnchor.constraint(equalTo: visualEffectContainer.leadingAnchor),
+            visualEffectContentView.trailingAnchor.constraint(equalTo: visualEffectContainer.trailingAnchor),
+            visualEffectContentView.topAnchor.constraint(equalTo: visualEffectContainer.topAnchor),
+            visualEffectContentView.bottomAnchor.constraint(equalTo: visualEffectContainer.bottomAnchor)
+        ])
+
+        visualEffectContainer.addSubview(visualEffectView)
+        visualEffectView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            visualEffectView.leadingAnchor.constraint(equalTo: visualEffectContainer.leadingAnchor),
+            visualEffectView.trailingAnchor.constraint(equalTo: visualEffectContainer.trailingAnchor),
+            visualEffectView.topAnchor.constraint(equalTo: visualEffectContainer.topAnchor),
+            visualEffectView.bottomAnchor.constraint(equalTo: visualEffectContainer.bottomAnchor)
+        ])
+    }
+
+    @objc func _update(_ timeInterval: TimeInterval) {
 
         guard distanceToMove != 0.0 else {
 
@@ -265,9 +387,9 @@ private extension UI {
             return
         }
 
-        let distance = distanceToMove / (60 * 0.1)
+        let distance = distanceToMove / (Constants.updateFrameRate * 0.1)
         distanceToMove -= distance
-        moveViewsNormalized(by: CGPoint(x: distance, y: distance))
+        _moveViewsNormalized(by: CGPoint(x: distance, y: distance))
 
         let translation = CGPoint(
             x: distance * (view.frame.size.width),
@@ -276,14 +398,14 @@ private extension UI {
         let directionalTranslation = translation.x
         if abs(directionalTranslation) < 0.1 {
 
-            moveViewsNormalized(by: CGPoint(x: distanceToMove, y: distanceToMove))
+            _moveViewsNormalized(by: CGPoint(x: distanceToMove, y: distanceToMove))
             distanceToMove = 0.0
             timer?.invalidate()
             timer = nil
         }
     }
 
-    private func moveViewsNormalized(by normalizedTranslation: CGPoint) {
+    func _moveViewsNormalized(by normalizedTranslation: CGPoint) {
 
         let isGestureHorizontal = true
 
@@ -302,63 +424,63 @@ private extension UI {
         )
 
         let viewSize = isGestureHorizontal ? viewSizeIncludingGap.width : viewSizeIncludingGap.height
-        let normalizedGap = 0/viewSize
+        let normalizedGap = gapBetweenMediaViews/viewSize
         let normalizedCenter = (middleView.frame.size.width / viewSize) * 0.5
         let viewCount = contentViews.count
 
         if middleView.position < -(normalizedGap + normalizedCenter) {
 
-            index = sanitizeIndex(index + 1)
+            index = _sanitizeIndex(index + 1)
 
             // Previous item is taken and placed on right/down most side
             previousView.position += CGFloat(viewCount)
             previousView.index += viewCount
-//            updateContents(of: previousView)
+            _updateContents(of: previousView)
 
-//            if let image = nextView.image {
-//                self.visualEffectContentView.image = image
-//            }
+            if let image = nextView.image {
+                visualEffectContentView.image = image
+            }
 
             contentViews.removeFirst()
             contentViews.append(previousView)
 
-//            switch drawOrder {
-//            case .previousToNext:
-//                mediaContainerView.bringSubview(toFront: previousView)
-//            case .nextToPrevious:
-//                mediaContainerView.sendSubview(toBack: previousView)
-//            }
+            switch _drawOrder {
+            case .previousToNext:
+                mediaContainerView.bringSubviewToFront(previousView)
+            case .nextToPrevious:
+                mediaContainerView.sendSubviewToBack(previousView)
+            }
 
-//            delegate?.mediaBrowser(self, didChangeFocusTo: index)
+            delegate?.mediaBrowser(self, didChangeFocusTo: index)
 
         } else if middleView.position > (1 + normalizedGap - normalizedCenter) {
 
-            index = sanitizeIndex(index - 1)
+            index = _sanitizeIndex(index - 1)
 
             // Next item is taken and placed on left/top most side
             nextView.position -= CGFloat(viewCount)
             nextView.index -= viewCount
-//            updateContents(of: nextView)
+            _updateContents(of: nextView)
 
-//            if let image = previousView.image {
-//                self.visualEffectContentView.image = image
-//            }
+            if let image = previousView.image {
+                visualEffectContentView.image = image
+            }
 
             contentViews.removeLast()
             contentViews.insert(nextView, at: 0)
 
-//            switch drawOrder {
-//            case .previousToNext:
-//                mediaContainerView.sendSubview(toBack: nextView)
-//            case .nextToPrevious:
-//                mediaContainerView.bringSubview(toFront: nextView)
-//            }
-//
-//            delegate?.mediaBrowser(self, didChangeFocusTo: index)
+            switch _drawOrder {
+            case .previousToNext:
+                mediaContainerView.sendSubviewToBack(nextView)
+            case .nextToPrevious:
+                mediaContainerView.bringSubviewToFront(nextView)
+            }
+
+            delegate?.mediaBrowser(self, didChangeFocusTo: index)
         }
     }
 
-    private func sanitizeIndex(_ index: Int) -> Int {
+    private func _sanitizeIndex(_ index: Int) -> Int {
         guard numMediaItems > 0 else {
             return 0
         }

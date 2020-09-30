@@ -20,6 +20,8 @@ class ViewController: UIViewController {
         button.setTitle("图片", for: .normal)
         button.frame = CGRect(x: 100, y: 100, width: 100, height: 50)
         button.addTarget(self, action: #selector(_actionClick), for: .touchUpInside)
+        
+        
     }
 
     override func didReceiveMemoryWarning() {
@@ -29,6 +31,8 @@ class ViewController: UIViewController {
     
     @objc func _actionClick() {
         let controller = WRImageBrowserViewController(dataSource: self)
+        controller.gapBetweenMediaViews = 0
+        controller.contentTransformer = WRImageContentTransformers.Horizotal.MoveIn
         present(controller, animated: true, completion: nil)
         
     }
@@ -38,7 +42,7 @@ class ViewController: UIViewController {
 
 extension ViewController: WRImageBrowserViewControllerDataSource {
     func numberOfItems(in imageBrowser: WRImageBrowserViewController) -> Int {
-        1
+        2
     }
 
     func mediaBrowser(_ imageBrowser: WRImageBrowserViewController, imageAt index: Int, completion: @escaping CompletionBlock) {
